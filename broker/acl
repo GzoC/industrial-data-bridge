@@ -1,0 +1,8 @@
+user gateway
+topic write aurora/v1/aurora-gw/events
+topic read aurora/v1/aurora-gw/acks
+topic write aurora/v1/aurora-gw/status
+
+user consumer
+topic read aurora/v1/aurora-gw/events
+topic write aurora/v1/aurora-gw/acks

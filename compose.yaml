@@ -1,0 +1,100 @@
+x-app: &app
+  build: .
+  image: industrial-data-bridge:0.1.0
+  init: true
+  mem_limit: 384m
+  stop_grace_period: 12s
+  networks: [lab]
+
+x-settings: &settings
+  BRIDGE_INTERVAL: ${BRIDGE_INTERVAL:-1}
+  BRIDGE_SEED: ${BRIDGE_SEED:-101}
+  BRIDGE_CONTROLS: /run/bridge-controls
+  BRIDGE_LAB_CONTROLS: "true"
+  BRIDGE_CAPACITY: ${BRIDGE_CAPACITY:-10000}
+  BRIDGE_OUTBOX_PATH: /var/lib/bridge/gateway.sqlite
+
+services:
+  opcua:
+    <<: *app
+    command: [python, -m, bridge, opcua, --container]
+    environment: *settings
+    volumes: [controls:/run/bridge-controls]
+  modbus:
+    <<: *app
+    command: [python, -m, bridge, modbus, --container]
+    environment:
+      <<: *settings
+      BRIDGE_DEVICE_ID: ${BRIDGE_DEVICE_ID:-1}
+      BRIDGE_WORD_ORDER: ${BRIDGE_WORD_ORDER:-big}
+    volumes: [controls:/run/bridge-controls]
+  broker:
+    image: eclipse-mosquitto:2.0.22
+    mem_limit: 128m
+    networks: [lab]
+    volumes:
+      - ./broker/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+      - ./broker/acl:/mosquitto/config/acl:ro
+      - ./.runtime/broker/passwords:/mosquitto/config/passwords:ro
+  postgres:
+    image: postgres:17.11-bookworm
+    mem_limit: 512m
+    networks: [lab]
+    environment:
+      POSTGRES_USER: bridge
+      POSTGRES_DB: bridge
+      POSTGRES_PASSWORD: ${DEMO_POSTGRES_PASSWORD:?Run scripts/init_demo.py}
+    healthcheck:
+      test: [CMD-SHELL, "pg_isready -U bridge -d bridge"]
+      interval: 2s
+      timeout: 2s
+      retries: 15
+    volumes: [postgres:/var/lib/postgresql/data]
+  gateway:
+    <<: *app
+    command: [python, -m, bridge, gateway]
+    environment:
+      <<: *settings
+      BRIDGE_OPC_HOST: opcua
+      BRIDGE_MODBUS_HOST: modbus
+      BRIDGE_BROKER_HOST: broker
+      BRIDGE_DEVICE_ID: ${BRIDGE_DEVICE_ID:-1}
+      BRIDGE_WORD_ORDER: ${BRIDGE_WORD_ORDER:-big}
+      BRIDGE_MQTT_GATEWAY_PASSWORD: ${BRIDGE_MQTT_GATEWAY_PASSWORD:?Run scripts/init_demo.py}
+    volumes:
+      - outbox:/var/lib/bridge
+      - controls:/run/bridge-controls
+    depends_on: [opcua, modbus, broker]
+  consumer:
+    <<: *app
+    command: [python, -m, bridge, consumer]
+    environment:
+      <<: *settings
+      BRIDGE_BROKER_HOST: broker
+      BRIDGE_MQTT_CONSUMER_PASSWORD: ${BRIDGE_MQTT_CONSUMER_PASSWORD:?Run scripts/init_demo.py}
+      BRIDGE_DATABASE_DSN: postgresql://bridge:${DEMO_POSTGRES_PASSWORD}@postgres:5432/bridge
+    volumes: [controls:/run/bridge-controls]
+    depends_on:
+      broker: {condition: service_started}
+      postgres: {condition: service_healthy}
+  api:
+    <<: *app
+    command: [uvicorn, bridge.api:app, --host, 0.0.0.0, --port, "8000", --no-access-log]
+    environment:
+      <<: *settings
+      BRIDGE_DATABASE_DSN: postgresql://bridge:${DEMO_POSTGRES_PASSWORD}@postgres:5432/bridge
+    networks: [lab, frontend]
+    ports: ["127.0.0.1:8000:8000"]
+    volumes:
+      - outbox:/var/lib/bridge
+      - controls:/run/bridge-controls
+    depends_on: [consumer, gateway]
+
+networks:
+  lab:
+    internal: true
+  frontend:
+volumes:
+  postgres:
+  outbox:
+  controls:

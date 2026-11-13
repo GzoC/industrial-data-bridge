@@ -1,0 +1,211 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Puente OT/IT Aurora</title>
+<style>
+:root { color-scheme: light; font: 16px/1.5 system-ui, sans-serif; color:#152c32; background:#eef3f0; }
+body { max-width:1100px; margin:auto; padding:28px 20px 64px; }
+header { padding:16px 0; border-bottom:3px solid #145a52; margin-bottom:20px; }
+h1,h2,p { margin:0 0 10px; } h1 { font-size:clamp(1.7rem,4vw,2.7rem); } h2 { font-size:1.25rem; }
+section { padding:18px; border:1px solid #b9cbc4; background:#fff; margin:14px 0; border-radius:8px; }
+.tables { display:grid; grid-template-columns:repeat(auto-fit,minmax(min(400px,100%),1fr)); gap:14px; }
+.tables section { overflow:auto; margin:0; }
+table { border-collapse:collapse; width:100%; text-align:left; font-size:.89rem; }
+td,th { border-bottom:1px solid #e3ebe6; padding:6px; vertical-align:top; }
+button,select,input { font:inherit; padding:5px 8px; border:1px solid #718e84; border-radius:4px; background:#f8fbfa; color:inherit; }
+button { cursor:pointer; } button:hover,button:focus-visible { background:#deefe8; }
+.alert { color:#8a321b; } .muted { color:#425b59; } .actions { display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin:8px 0; }
+code,pre { font-size:.82rem; overflow-wrap:anywhere; white-space:pre-wrap; }
+canvas { width:100%; height:240px; background:#f8fbfa; } a { color:#135c53; }
+</style>
+</head>
+<body>
+<header>
+  <p>Planta ficticia · Datos sintéticos</p>
+  <h1>Puente OT/IT Aurora</h1>
+  <p id="clock" class="muted" aria-live="polite">Cargando estado de adquisición…</p>
+</header>
+<div class="tables">
+  <section><h2>Tanque TK101 · OPC UA</h2><div id="tank"></div></section>
+  <section><h2>Bomba P101 · Modbus TCP</h2><div id="pump"></div></section>
+</div>
+<section>
+  <h2>Entrega y comunicaciones</h2>
+  <p id="delivery" aria-live="polite">Cargando contadores…</p>
+  <p id="coverage"></p>
+  <div class="actions">
+    <button id="capture">Guardar IDs pendientes</button>
+    <button id="verify">Verificar IDs en PostgreSQL</button>
+  </div>
+  <pre id="evidence" aria-live="polite"></pre>
+</section>
+<section>
+  <h2>Histórico</h2>
+  <div class="actions">
+    <label>Variable <select id="tag">
+      <option value="TK101.level">Nivel (m)</option>
+      <option value="TK101.temperature">Temperatura (°C)</option>
+      <option value="P101.flow">Caudal (L/min)</option>
+      <option value="P101.pressure">Presión (bar)</option>
+      <option value="P101.speed">Velocidad (rpm)</option>
+    </select></label>
+    <label>Lote <input id="lot" placeholder="Todos"></label>
+    <button id="refresh">Consultar últimos 5 minutos</button>
+    <a id="csv">Descargar CSV</a>
+  </div>
+  <p id="history-status" aria-live="polite"></p>
+  <canvas id="chart" width="960" height="240" role="img" aria-label="Histórico por hora UTC y unidad seleccionada"></canvas>
+</section>
+<section>
+  <h2>Fallos de laboratorio</h2>
+  <div class="actions">
+    <label>Simulador <select id="sim"><option value="opcua">OPC UA</option><option value="modbus">Modbus TCP</option></select></label>
+    <label>Modo <select id="mode">
+      <option value="normal">Normal</option><option value="offline">Desconectado</option>
+      <option value="invalid">Dato inválido</option><option value="frozen">Valor constante</option>
+    </select></label>
+    <button id="apply">Aplicar modo</button>
+    <button id="pause">Pausar consumidor</button>
+    <button id="resume">Reanudar consumidor</button>
+    <button id="seed">Crear órdenes sintéticas</button>
+  </div>
+  <p>Para cortar el enlace MQTT, ejecuta <code>docker compose stop broker</code>. Restáuralo con <code>docker compose start broker</code>.</p>
+  <p id="lab-status" aria-live="polite"></p>
+</section>
+<script>
+const byId = id => document.getElementById(id);
+const names = {level:'Nivel', temperature:'Temperatura', flow:'Caudal', pressure:'Presión', speed:'Velocidad', running:'Marcha'};
+const number = new Intl.NumberFormat('es-CL',{maximumFractionDigits:2});
+let latestBacklog = [];
+let expected = [];
+let secondsPerSample = 1;
+async function request(url, method = 'GET', data) {
+  const response = await fetch(url, {
+    method, cache:'no-store', headers: data ? {'Content-Type':'application/json'} : {},
+    body: data ? JSON.stringify(data) : undefined
+  });
+  if (!response.ok) {
+    const detail = await response.json().catch(() => ({}));
+    throw new Error(typeof detail.detail === 'string' ? detail.detail : 'Error HTTP ' + response.status);
+  }
+  return response.json();
+}
+function row(table, values, header = false) {
+  const line = table.insertRow();
+  for (const value of values) {
+    const cell = document.createElement(header ? 'th' : 'td');
+    cell.textContent = value;
+    line.append(cell);
+  }
+}
+function fill(id, readings) {
+  const table = document.createElement('table');
+  row(table, ['Variable','Valor','Calidad','Edad','Lote'], true);
+  for (const r of readings) {
+    let value = '—';
+    if (!r.stale && r.value !== null) {
+      value = typeof r.value === 'boolean' ? (r.value ? 'En marcha' : 'Detenida') : number.format(r.value) + ' ' + r.unit;
+    }
+    const age = r.age_seconds == null ? '—' : number.format(r.age_seconds) + ' s';
+    const quality = r.stale && r.quality !== 'SIN DATOS' ? r.quality + ' · vencido' : r.quality;
+    row(table, [names[r.tag_id.split('.')[1]], value, quality, age, r.order?.lot_id ?? '—']);
+  }
+  byId(id).replaceChildren(table);
+}
+async function update() {
+  const [assets, backlog, stats] = await Promise.allSettled([
+    request('/api/assets'), request('/api/backlog'), request('/api/stats')
+  ]);
+  if (assets.status === 'fulfilled') {
+    const a = assets.value;
+    secondsPerSample = 1 / a.frequency_hz;
+    byId('clock').textContent = 'Actualizado ' + new Date(a.updated_at).toLocaleTimeString() + ' · ' + number.format(a.frequency_hz) + ' Hz por variable';
+    fill('tank', a.readings.filter(r => r.asset_id === 'TK101'));
+    fill('pump', a.readings.filter(r => r.asset_id === 'P101'));
+  } else {
+    byId('clock').textContent = assets.reason.message;
+    byId('tank').textContent = byId('pump').textContent = 'Lecturas no disponibles';
+  }
+  if (backlog.status === 'fulfilled') {
+    const b = backlog.value;
+    latestBacklog = b.pending_ids;
+    const c = stats.value?.counters ?? {};
+    const totals = stats.status === 'fulfilled' ?
+      ' · Almacenados ' + (c.stored ?? 0) + ' · Repetidos ' + (c.duplicate ?? 0) +
+      ' · Rechazados ' + (c.rejected ?? 0) + ' · Conflictos ' + (c.conflict ?? 0) : ' · Contadores de PostgreSQL no disponibles';
+    byId('delivery').textContent = 'MQTT ' + (b.gateway.mqtt ?? 'sin estado') +
+      ' · OPC UA ' + (b.gateway.opcua ?? 'sin estado') + ' · Modbus ' + (b.gateway.modbus ?? 'sin estado') +
+      ' · Pendientes ' + b.pending + '/' + b.capacity + totals;
+    const gap = b.coverage[0];
+    byId('coverage').textContent = gap ?
+      'Pérdida de cobertura: ' + gap.skipped_slots + ' lecturas omitidas desde ' + gap.started +
+      (gap.ended ? ' hasta ' + gap.ended : ' · pausa activa') : '';
+  } else {
+    latestBacklog = [];
+    byId('delivery').textContent = backlog.reason.message;
+    byId('coverage').textContent = '';
+  }
+}
+byId('capture').onclick = () => {
+  expected = latestBacklog.slice(0, 20);
+  byId('evidence').textContent = expected.length ? expected.join('\n') : 'Sin identificadores pendientes en la última consulta.';
+};
+byId('verify').onclick = async () => {
+  const verified = await Promise.all(expected.map(async id => {
+    try { await request('/api/events/' + id); return id + ' · almacenado'; }
+    catch (error) { return id + ' · ' + error.message; }
+  }));
+  byId('evidence').textContent = verified.join('\n') || 'Guarda primero los identificadores pendientes.';
+};
+async function drawHistory() {
+  const end = new Date(), start = new Date(end.getTime() - 300000);
+  const query = new URLSearchParams({tag:byId('tag').value,start:start.toISOString(),end:end.toISOString()});
+  if (byId('lot').value.trim()) query.set('lot',byId('lot').value.trim());
+  byId('csv').href = '/api/history.csv?' + query;
+  const canvas = byId('chart'), ctx = canvas.getContext('2d');
+  ctx.clearRect(0,0,canvas.width,canvas.height);
+  try {
+    const response = await request('/api/history?' + query + '&limit=5000');
+    const events = response.events;
+    const valid = events.filter(e => typeof e.value === 'number' && e.quality === 'GOOD');
+    byId('history-status').textContent = valid.length ? valid.length + ' lecturas GOOD · ' + valid[0].unit + ' · eje horizontal UTC' : 'Sin lecturas GOOD en este intervalo';
+    if (!valid.length) return;
+    const values = valid.map(e => e.value);
+    const min = Math.min(...values), max = Math.max(...values);
+    const y = value => 202 - 177 * (value - min) / (max - min || 1);
+    const x = time => 70 + (time - start) / (end - start) * 850;
+    ctx.fillStyle = '#425b59';
+    ctx.font = '13px system-ui';
+    ctx.fillText(number.format(max),10,25); ctx.fillText(number.format(min),10,204);
+    ctx.fillText(start.toISOString().slice(11,19),70,227);
+    ctx.fillText(end.toISOString().slice(11,19),860,227);
+    ctx.strokeStyle = '#145a52'; ctx.fillStyle = '#145a52'; ctx.lineWidth = 2;
+    let previous = null;
+    for (const e of events) {
+      const time = new Date(e.event_time).getTime();
+      if (typeof e.value !== 'number' || e.quality !== 'GOOD') { previous = null; continue; }
+      const point = {x:x(time),y:y(e.value),time};
+      if (previous && (time - previous.time) <= 1800 * secondsPerSample) {
+        ctx.beginPath(); ctx.moveTo(previous.x,previous.y); ctx.lineTo(point.x,point.y); ctx.stroke();
+      }
+      ctx.fillRect(point.x - 1,point.y - 1,3,3);
+      previous = point;
+    }
+  } catch (error) { byId('history-status').textContent = error.message; }
+}
+byId('refresh').onclick = drawHistory;
+async function change(path, method, data) {
+  try { await request(path,method,data); byId('lab-status').textContent = 'Acción aplicada'; }
+  catch (error) { byId('lab-status').textContent = error.message; }
+  await update();
+}
+byId('apply').onclick = () => change('/api/lab/simulator/' + byId('sim').value,'PUT',{mode:byId('mode').value});
+byId('pause').onclick = () => change('/api/lab/consumer','PUT',{paused:true});
+byId('resume').onclick = () => change('/api/lab/consumer','PUT',{paused:false});
+byId('seed').onclick = () => change('/api/lab/seed-orders','POST');
+update(); drawHistory(); setInterval(update,2000);
+</script>
+</body>
+</html>
