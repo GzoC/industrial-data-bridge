@@ -233,7 +233,8 @@ class Lab:
                 "-l",
                 str(self.root / "postgres.log"),
                 "-o",
-                f"-h 127.0.0.1 -p {self.postgres_port} -c track_commit_timestamp=on",
+                f"-h 127.0.0.1 -p {self.postgres_port} -c track_commit_timestamp=on"
+                + (" -c unix_socket_directories=" if os.name != "nt" else ""),
             ]
             if operation == "start"
             else ["-m", "fast"]
@@ -256,7 +257,16 @@ class Lab:
                 stderr=subprocess.STDOUT,
                 timeout=18,
             )
-        assert result.returncode == 0, diagnostic.read_text(errors="replace")
+        if result.returncode != 0:
+            server_log = self.root / "postgres.log"
+            pytest.fail(
+                diagnostic.read_text(errors="replace")
+                + (
+                    server_log.read_text(errors="replace")[-4000:]
+                    if server_log.exists()
+                    else ""
+                )
+            )
 
     def start_consumer(self):
         env = os.environ | {

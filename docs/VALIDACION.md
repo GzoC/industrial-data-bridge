@@ -27,6 +27,11 @@ Docker Engine. El arranque limpio de Compose se verifica por CI, con resultado
 pendiente al preparar esta revisión. Las sesiones TLS de OPC UA y MQTT con
 certificados de laboratorio quedan pendientes de prueba de integración.
 
+La primera ejecución de la nueva CI aprobó `checks` y falló al iniciar las
+cuatro instancias temporales de PostgreSQL en Ubuntu, antes del paso Compose.
+El fixture ahora usa sólo TCP en Unix y adjunta el log del servidor si el
+arranque falla. El resultado del reintento debe confirmarse en el PR.
+
 Fecha: 13 de noviembre de 2026. Entorno: Windows 10 22H2, 12 procesadores lógicos, 7,87 GiB RAM, CPU. Python 3.12.13, SQLite 3.53.1, uv 0.11.19, asyncua 2.1.0, PyModbus 3.11.4, Paho 2.1.0, Mosquitto 2.0.22 y PostgreSQL 18.6. Semilla de simulación 101. PostgreSQL se ejecutó con binarios nativos de validación y el perfil Compose usa una imagen versionada de PostgreSQL 17.
 
 ## Repetir la validación
