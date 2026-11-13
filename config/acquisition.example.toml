@@ -1,0 +1,47 @@
+profile = "acquisition"
+site_id = "laboratorio"
+gateway_id = "lector-01"
+database_env = "OT_DATABASE_DSN"
+outbox = ".runtime/acquisition.sqlite"
+capacity = 10000
+heartbeat_max_age = 20
+pending_max_age = 30
+history_days = 90
+diagnostic_days = 30
+
+[assets]
+ESTANQUE_B = "Estanque B"
+
+[[allowed]]
+host = "127.0.0.1"
+port = 2502
+
+[broker]
+host = "127.0.0.1"
+port = 1883
+gateway_user = "gateway"
+consumer_user = "consumer"
+gateway_password_env = "OT_MQTT_GATEWAY_PASSWORD"
+consumer_password_env = "OT_MQTT_CONSUMER_PASSWORD"
+# ca = "certs/broker-ca.pem"
+
+[[sources]]
+id = "medidor_b"
+protocol = "modbus"
+host = "127.0.0.1"
+port = 2502
+device_id = 1
+interval = 1
+timeout = 2
+
+[[sources.variables]]
+id = "nivel_b"
+asset = "ESTANQUE_B"
+unit = "cm"
+table = "holding"
+address = 0
+kind = "uint16"
+byte_order = "big"
+word_order = "big"
+scale = 0.1
+offset = 0

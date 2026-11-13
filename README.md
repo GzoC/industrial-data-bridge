@@ -15,6 +15,30 @@ docker compose up --build -d
 
 Open [the local dashboard](http://127.0.0.1:8000), create the synthetic orders, and follow the [Spanish demonstration](docs/GUIA.md). Stop the stack with `docker compose down`. Compose keeps the PostgreSQL and SQLite volumes for the next run.
 
+![Aurora dashboard during a real Windows lab run](docs/evidence/aurora-live.png)
+
+## Configure an authorized source
+
+Copy [the alternate Modbus map](config/acquisition.example.toml) and edit the
+destination allowlist, source, asset and variable definitions. The example
+reads holding register zero on port 2502, independently of the demo's pump.
+Provide a PostgreSQL database, Mosquitto users with per-role ACLs, and the
+environment variables referenced by the profile.
+
+```sh
+uv run python -m bridge validate --config config/acquisition.example.toml
+uv run python -m bridge diagnose --config config/acquisition.example.toml
+uv run python -m bridge probe --config config/acquisition.example.toml --source medidor_b
+uv run python -m bridge consumer --config config/acquisition.example.toml
+uv run python -m bridge gateway --config config/acquisition.example.toml
+BRIDGE_CONFIG=config/acquisition.example.toml uv run uvicorn bridge.api:app --host 127.0.0.1 --port 8000
+```
+
+Run the last three commands in separate terminals. The acquisition profile
+supports read-only Modbus TCP and OPC UA in a controlled lab or pilot. See the
+[Spanish guide](docs/GUIA.md#fuente-propia-autorizada) for TLS, broker ACLs,
+querying, export, backups and operation.
+
 ## Delivery
 
 ```mermaid

@@ -45,6 +45,24 @@ class Outbox:
             ).fetchone()[0]
             return pending + batch <= self.capacity
 
+    def bind_scope(self, scope: str):
+        with closing(self.connect()) as db, db:
+            db.execute("BEGIN IMMEDIATE")
+            row = db.execute("SELECT value FROM status WHERE key='scope'").fetchone()
+            if row and row[0] != scope:
+                raise ValueError(
+                    "Outbox belongs to another site/gateway; drain it with its original profile"
+                )
+            if (
+                not row
+                and scope != "aurora/v1/aurora-gw"
+                and db.execute("SELECT 1 FROM pending LIMIT 1").fetchone()
+            ):
+                raise ValueError(
+                    "Unbound legacy outbox contains events; use the original demo profile"
+                )
+            db.execute("INSERT OR IGNORE INTO status VALUES ('scope',?)", (scope,))
+
     def put(self, events: list[Event]) -> bool:
         rows = [(str(event.event_id), event.digest(), event.wire()) for event in events]
         with closing(self.connect()) as db, db:
@@ -59,6 +77,13 @@ class Outbox:
                 return False
             db.executemany(
                 "INSERT INTO pending(event_id,digest,body) VALUES (?,?,?)", rows
+            )
+            db.execute(
+                """
+                INSERT INTO counters VALUES ('enqueued',?)
+                ON CONFLICT(name) DO UPDATE SET total=total+excluded.total
+            """,
+                (len(rows),),
             )
             return True
 
@@ -105,6 +130,10 @@ class Outbox:
                 """)
             if changed:
                 db.execute(
+                    "INSERT OR REPLACE INTO status VALUES ('last_ack',?)",
+                    (now().isoformat(),),
+                )
+                db.execute(
                     """
                     INSERT INTO counters VALUES (?,1)
                     ON CONFLICT(name) DO UPDATE SET total=total+1
@@ -140,6 +169,9 @@ class Outbox:
         with closing(self.connect()) as db:
             return {
                 "capacity": self.capacity,
+                "oldest_pending": db.execute(
+                    "SELECT min(json_extract(body,'$.observed_at')) FROM pending WHERE terminal IS NULL"
+                ).fetchone()[0],
                 "pending": db.execute(
                     "SELECT count(*) FROM pending WHERE terminal IS NULL"
                 ).fetchone()[0],

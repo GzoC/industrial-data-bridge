@@ -1,5 +1,12 @@
 # Continuación del proyecto
 
+## Evolución configurable
+
+Rama `codex/configurable-acquisition`, basada en `9c4ccbe`. Leer
+`VALIDACION.md` para separar pruebas nativas de las que dependen de CI.
+Verificar el trabajo `integration` y repetir con certificados de laboratorio
+para OPC UA y MQTT. Usar el perfil alternativo descrito en el README.
+
 Fecha de inicio: 13 de noviembre de 2026. Encargo: puente de datos industriales OT/IT.
 
 ## Hitos de trabajo

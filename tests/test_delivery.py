@@ -32,6 +32,80 @@ ROOT = Path(__file__).resolve().parents[1]
 TAG = BY_ID["P101.flow"]
 
 
+@pytest.mark.integration
+async def test_configured_pending_map_replays_to_postgres(lab, monkeypatch):
+    from bridge.api import assets, history_rows
+    from bridge.events import Event
+    from bridge.profile import Profile
+
+    monkeypatch.setenv("OT_MQTT_GATEWAY_PASSWORD", lab.settings.password("gateway"))
+    monkeypatch.setenv("OT_MQTT_CONSUMER_PASSWORD", lab.settings.password("consumer"))
+    monkeypatch.setenv("OT_DATABASE_DSN", lab.settings.dsn())
+    raw = Profile.read(str(ROOT / "config/acquisition.example.toml")).model_dump(
+        mode="json"
+    )
+    raw["broker"]["port"] = lab.mqtt_port
+    raw["outbox"] = str(lab.outbox.path)
+    before = Profile.model_validate(raw)
+    settings = Settings(profile=before)
+    topic_base = settings.topic("events").rsplit("/", 1)[0]
+    lab.terminate("broker")
+    path = lab.root / "acl"
+    path.write_text(path.read_text().replace("aurora/v1/aurora-gw", topic_base))
+    lab.start_broker()
+    lab.outbox.bind_scope(settings.scope)
+    var = before.sources[0].variables[0]
+    event = Event(
+        **(
+            reading().model_dump()
+            | {
+                "schema_version": 2,
+                "simulated": False,
+                "site_id": before.site_id,
+                "gateway_id": before.gateway_id,
+                "tag_id": var.id,
+                "asset_id": var.asset,
+                "unit": var.unit,
+                "mapping": var,
+                "config_hash": before.digest,
+                "source_id": before.sources[0].id,
+            }
+        )
+    )
+    assert lab.outbox.put([event])
+    example = (
+        (ROOT / "config/acquisition.example.toml")
+        .read_text()
+        .replace('unit = "cm"', 'unit = "mm"')
+        .replace("port = 1883", f"port = {lab.mqtt_port}")
+        .replace(
+            'outbox = ".runtime/acquisition.sqlite"',
+            f"outbox = '{lab.outbox.path.as_posix()}'",
+        )
+    )
+    path = lab.root / "changed.toml"
+    path.write_text(example)
+    monkeypatch.setenv("BRIDGE_CONFIG", str(path))
+    changed = Settings.load()
+    stopping = asyncio.Event()
+    from bridge import consumer
+
+    async with asyncio.TaskGroup() as group:
+        group.create_task(consumer.run(changed, stopping))
+        group.create_task(gateway.Publisher(changed, lab.outbox).run(stopping))
+        try:
+            await until(lambda: lab.outbox.status()["pending"] == 0)
+            stored = assets()["readings"][0]
+            assert stored["unit"] == "cm"
+            assert stored["config_hash"] == before.digest
+            assert stored["simulated"] is False
+            assert history_rows(
+                var.id, now() - timedelta(minutes=1), now(), None, 10, 0
+            )
+        finally:
+            stopping.set()
+
+
 def reading(sequence=1, stamp=None):
     return (
         Sample(TAG, 12.0, [16704, 0], stamp or now())
@@ -159,7 +233,8 @@ class Lab:
                 "-l",
                 str(self.root / "postgres.log"),
                 "-o",
-                f"-h 127.0.0.1 -p {self.postgres_port} -c track_commit_timestamp=on",
+                f"-h 127.0.0.1 -p {self.postgres_port} -c track_commit_timestamp=on"
+                + (" -c unix_socket_directories=" if os.name != "nt" else ""),
             ]
             if operation == "start"
             else ["-m", "fast"]
@@ -182,7 +257,16 @@ class Lab:
                 stderr=subprocess.STDOUT,
                 timeout=18,
             )
-        assert result.returncode == 0, diagnostic.read_text(errors="replace")
+        if result.returncode != 0:
+            server_log = self.root / "postgres.log"
+            pytest.fail(
+                diagnostic.read_text(errors="replace")
+                + (
+                    server_log.read_text(errors="replace")[-4000:]
+                    if server_log.exists()
+                    else ""
+                )
+            )
 
     def start_consumer(self):
         env = os.environ | {
@@ -236,6 +320,8 @@ def lab(tmp_path):
     broker = os.environ.get("TEST_MOSQUITTO")
     pg_bin = os.environ.get("TEST_PG_BIN")
     if not broker or not pg_bin:
+        if os.environ.get("REQUIRE_INTEGRATION") == "1":
+            pytest.fail("Missing TEST_MOSQUITTO or TEST_PG_BIN")
         pytest.skip("Set TEST_MOSQUITTO and TEST_PG_BIN to real local executables")
     instance = Lab(tmp_path, str(Path(broker).resolve()), Path(pg_bin).resolve(), 3000)
     instance.pg("start")
