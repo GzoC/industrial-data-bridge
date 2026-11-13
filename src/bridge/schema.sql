@@ -11,6 +11,17 @@ CREATE TABLE IF NOT EXISTS production_orders (
     CHECK (valid_from < valid_to),
     EXCLUDE USING gist (asset_id WITH =, tstzrange(valid_from, valid_to, '[)') WITH &&)
 );
+ALTER TABLE production_orders DROP CONSTRAINT IF EXISTS production_orders_asset_id_check;
+ALTER TABLE production_orders ADD COLUMN IF NOT EXISTS site_id text NOT NULL DEFAULT 'aurora-demo';
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='orders_site_asset_period'
+                   AND conrelid='production_orders'::regclass) THEN
+        ALTER TABLE production_orders DROP CONSTRAINT IF EXISTS production_orders_asset_id_tstzrange_excl;
+        ALTER TABLE production_orders ADD CONSTRAINT orders_site_asset_period
+            EXCLUDE USING gist (site_id WITH =, asset_id WITH =, tstzrange(valid_from, valid_to, '[)') WITH &&);
+    END IF;
+END $$;
 
 CREATE TABLE IF NOT EXISTS events (
     event_id uuid PRIMARY KEY,
@@ -27,6 +38,9 @@ CREATE TABLE IF NOT EXISTS events (
 );
 CREATE INDEX IF NOT EXISTS events_history ON events(tag_id,event_time DESC,event_id);
 CREATE INDEX IF NOT EXISTS events_lot ON events((order_context->>'lot_id'),event_time);
+CREATE INDEX IF NOT EXISTS events_scoped_history ON events(
+    (body->>'site_id'), (body->>'gateway_id'), tag_id, event_time DESC, observed_at DESC, event_id
+);
 
 CREATE TABLE IF NOT EXISTS delivery_errors (
     id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
@@ -39,3 +53,10 @@ CREATE TABLE IF NOT EXISTS delivery_errors (
 );
 
 CREATE TABLE IF NOT EXISTS delivery_counters (kind text PRIMARY KEY, total bigint NOT NULL);
+CREATE TABLE IF NOT EXISTS scoped_delivery_counters (
+    site_id text NOT NULL, gateway_id text NOT NULL, kind text NOT NULL, total bigint NOT NULL,
+    PRIMARY KEY (site_id, gateway_id, kind)
+);
+CREATE TABLE IF NOT EXISTS consumer_status (
+    scope text PRIMARY KEY, heartbeat timestamptz NOT NULL, subscribed boolean NOT NULL
+);

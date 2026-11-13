@@ -1,5 +1,81 @@
 # Guía técnica y de demostración
 
+## Fuente propia autorizada
+
+Copia `config/acquisition.example.toml`. Define sitio, gateway, activos, fuentes
+y variables. Autoriza el par host/puerto exacto de cada fuente. El ejemplo
+alternativo convierte el holding register 0 de Modbus TCP en centímetros con
+escala 0,1 y usa el puerto 2502. También se admiten `input`, `coil`, `discrete`
+y tipos `bool`, `int16`, `uint16`, `int32`, `uint32`, `float32`.
+
+Para OPC UA define una fuente con este patrón y su entrada en `[[allowed]]`.
+
+```toml
+[[sources]]
+id = "opc_b"
+protocol = "opcua"
+endpoint = "opc.tcp://127.0.0.1:54840/lab/"
+namespace = "urn:lab:instrumentacion"
+interval = 1
+timeout = 2
+
+[[sources.variables]]
+id = "temperatura_b"
+asset = "ESTANQUE_B"
+unit = "°C"
+kind = "float64"
+node = "Sensor.Temperature" # También admite un entero TOML
+```
+
+Para SignAndEncrypt con Basic256Sha256, agrega la tabla `[sources.security]`
+antes de `[[sources.variables]]`. Declara `client_certificate`, `client_key`,
+`server_certificate` y `application_uri`. La huella de confianza deriva del
+certificado del servidor configurado, que se contrasta durante la sesión
+segura. Instala ese certificado mediante un canal confiable. Declara
+`username_env` y `password_env` juntos si el servidor requiere credenciales.
+Para MQTT seguro fija `broker.ca`, puerto TLS y host coincidente con el
+certificado. Los modos sin TLS sólo corresponden a una red de laboratorio
+aislada. Modbus TCP convencional carece de autenticación y cifrado.
+
+Mosquitto debe aceptar los usuarios distintos indicados en el TOML. Para el
+ejemplo, usa el prefijo `bridge/v2/laboratorio/lector-01`. El rol gateway publica
+`events` y `status` y lee `acks`. El rol consumidor lee `events` y publica
+`acks`. PostgreSQL requiere inicialización del esquema y extensión
+`btree_gist`. Proporciona las tres variables de entorno referidas en TOML y
+ejecuta `validate`, `diagnose`, `probe`, `consumer` y `gateway` según el README.
+En PowerShell define `$env:BRIDGE_CONFIG='config/acquisition.example.toml'`
+antes de `uv run uvicorn bridge.api:app --host 127.0.0.1 --port 8000`.
+
+Los eventos v2 conservan el mapa aplicado y el hash de la configuración al
+adquirir. Conserva sitio, gateway y archivo de cola para reintentar tras un
+cambio de mapa. Para cambiar de identidad, drena la cola con el perfil original
+y usa otro archivo. Un rechazo con ID y digest coincidentes se registra en
+PostgreSQL y se aísla en SQLite. Se conservan hasta 1.000 registros terminales
+locales y los contadores acumulados.
+
+### Consultar y operar
+
+`/api/live` responde si la API vive. `/api/ready` responde 503 si el conjunto
+de adquisición y entrega está degradado o indisponible. `/api/status` describe
+las causas, edades, ocupación y contadores de cola. Compara el contador acumulado
+`enqueued` y el pendiente entre dos lecturas para observar crecimiento.
+
+Usa el selector de rango, activo y variable de la interfaz o
+`scripts/history_report.py --tag nivel_b --start <ISO8601> --end <ISO8601>`.
+Agrega `--csv datos.csv` para exportar todas las páginas. La API informa la
+siguiente página JSON con `next_offset` y en CSV con `X-Next-Offset`, hasta 5.000
+filas por respuesta. Exporta intervalos cerrados sin inserciones tardías si
+necesitas un conjunto estable al paginar.
+
+Los eventos persistidos quedan en PostgreSQL y la cola local en el SQLite
+configurado. Para respaldar, detén el gateway y conserva el archivo SQLite y
+sus archivos auxiliares si existen. Usa `pg_dump -Fc` y `pg_restore` para la
+base. Guarda aparte el TOML, certificados y credenciales. Restaura primero la
+base y luego la cola con su perfil. A seis eventos/s, 10.000 posiciones
+permiten alrededor de 27 minutos sin entrega antes de pausar adquisición.
+`/api/retention/preview` cuenta candidatos según `history_days` y
+`diagnostic_days`. El proyecto no ejecuta limpieza histórica automática.
+
 ## Mapa de adquisición
 
 | Variable | Protocolo y referencia | Tipo y rango |

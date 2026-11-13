@@ -16,3 +16,33 @@ jobs:
       - run: uv run ruff format --check
       - run: uv run pytest -m 'not integration'
       - run: uv run pytest tests/test_acquisition.py -m integration
+  integration:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2
+        with:
+          version: "0.11.19"
+      - run: sudo apt-get update && sudo apt-get install -y mosquitto postgresql
+      - run: uv sync --locked
+      - name: Run real-service suite
+        run: |
+          export TEST_MOSQUITTO="$(command -v mosquitto)"
+          export TEST_PG_BIN="$(pg_config --bindir)"
+          export REQUIRE_INTEGRATION=1
+          test -x "$TEST_MOSQUITTO" && test -x "$TEST_PG_BIN/initdb"
+          uv run pytest -q -s
+      - name: Verify a clean Compose start and persisted event after restart
+        run: |
+          uv run python scripts/init_demo.py
+          docker compose up --build -d
+          curl -fsS --retry 35 --retry-delay 2 --retry-all-errors http://127.0.0.1:8000/api/ready
+          event_id="$(curl -fsS http://127.0.0.1:8000/api/assets | jq -er '[.readings[].event_id | select(. != null)][0]')"
+          docker compose down
+          docker compose up -d
+          curl -fsS --retry 35 --retry-delay 2 --retry-all-errors "http://127.0.0.1:8000/api/events/$event_id"
+      - name: Compose logs and cleanup
+        if: always()
+        run: |
+          if test -f .env; then docker compose logs --tail 50; docker compose down -v; fi

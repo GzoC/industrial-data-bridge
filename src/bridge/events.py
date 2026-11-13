@@ -19,6 +19,7 @@ from pydantic import (
 )
 
 from bridge.config import GATEWAY_ID, OPC_NAMESPACE, SITE_ID
+from bridge.profile import Identifier, Variable
 
 Protocol = Literal["opcua", "modbus"]
 Quality = Literal["GOOD", "UNCERTAIN", "BAD"]
@@ -45,6 +46,8 @@ class Tag:
 
     def accepts(self, value: object) -> bool:
         if type(value) is not self.kind:
+            return False
+        if isinstance(value, float) and not isfinite(value):
             return False
         return self.limits is None or self.limits[0] <= value <= self.limits[1]
 
@@ -84,11 +87,11 @@ class Event(BaseModel):
     model_config = ConfigDict(extra="forbid", allow_inf_nan=False, frozen=True)
 
     event_id: UUID
-    schema_version: Literal[1]
-    gateway_id: Literal["aurora-gw"]
+    schema_version: Literal[1, 2]
+    gateway_id: Identifier
     session_id: UUID
     sequence: Annotated[StrictInt, Field(gt=0, le=2**63 - 1)]
-    site_id: Literal["aurora-demo"]
+    site_id: Identifier
     asset_id: str
     tag_id: str
     source_protocol: Protocol
@@ -103,11 +106,54 @@ class Event(BaseModel):
     quality: Quality
     quality_reasons: tuple[str, ...]
     source_status: Annotated[StrictInt, Field(ge=0, le=2**32 - 1)] | None = None
-    simulated: Literal[True]
+    simulated: StrictBool
+    config_hash: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    source_id: Identifier | None = None
+    mapping: Variable | None = None
 
     @model_validator(mode="after")
     def check_contract(self) -> "Event":
-        tag = BY_ID.get(self.tag_id)
+        if self.schema_version == 2:
+            mapping = self.mapping
+            if (
+                mapping is None
+                or not self.config_hash
+                or not self.source_id
+                or self.simulated
+                or (mapping.id, mapping.asset, mapping.unit)
+                != (self.tag_id, self.asset_id, self.unit)
+            ):
+                raise ValueError("invalid version 2 mapping or provenance")
+            expected = (
+                bool
+                if mapping.kind == "bool"
+                else (
+                    float
+                    if mapping.kind.startswith("float")
+                    or (mapping.scale, mapping.offset) != (1, 0)
+                    else int
+                )
+            )
+            tag = Tag(
+                self.asset_id,
+                self.tag_id,
+                self.source_protocol,
+                self.source_ref,
+                self.unit,
+                expected,
+            )
+        else:
+            tag = BY_ID.get(self.tag_id)
+            if (
+                not self.simulated
+                or self.site_id != SITE_ID
+                or self.gateway_id != GATEWAY_ID
+                or any(
+                    v is not None
+                    for v in (self.config_hash, self.source_id, self.mapping)
+                )
+            ):
+                raise ValueError("invalid legacy provenance or identity")
         if not tag or (
             self.asset_id,
             self.source_protocol,
@@ -147,8 +193,15 @@ class Event(BaseModel):
         return self.observed_at
 
     def wire(self) -> str:
+        exclude = (
+            {"config_hash", "source_id", "mapping"}
+            if self.schema_version == 1
+            else set()
+        )
         return json.dumps(
-            self.model_dump(mode="json"), sort_keys=True, separators=(",", ":")
+            self.model_dump(mode="json", exclude=exclude),
+            sort_keys=True,
+            separators=(",", ":"),
         )
 
     def digest(self) -> str:
@@ -165,7 +218,7 @@ class Sample:
     status: int | None = None
     failure: str | None = None
 
-    def event(self, session: UUID, sequence: int) -> Event:
+    def event(self, session: UUID, sequence: int, **metadata) -> Event:
         reasons = []
         if self.failure:
             reasons.append(self.failure)
@@ -191,7 +244,7 @@ class Sample:
         raw = self.raw
         if isinstance(raw, float) and not isfinite(raw):
             raw = "NaN" if raw != raw else ("Infinity" if raw > 0 else "-Infinity")
-        return Event(
+        fields = dict(
             event_id=uuid4(),
             schema_version=1,
             gateway_id=GATEWAY_ID,
@@ -214,3 +267,4 @@ class Sample:
             quality_reasons=tuple(reasons),
             simulated=True,
         )
+        return Event(**(fields | metadata))

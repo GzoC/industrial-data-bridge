@@ -23,14 +23,11 @@ canvas { width:100%; height:240px; background:#f8fbfa; } a { color:#135c53; }
 </head>
 <body>
 <header>
-  <p>Planta ficticia · Datos sintéticos</p>
-  <h1>Puente OT/IT Aurora</h1>
+  <p id="profile">Consultando perfil…</p>
+  <h1>Puente de datos OT/IT</h1>
   <p id="clock" class="muted" aria-live="polite">Cargando estado de adquisición…</p>
 </header>
-<div class="tables">
-  <section><h2>Tanque TK101 · OPC UA</h2><div id="tank"></div></section>
-  <section><h2>Bomba P101 · Modbus TCP</h2><div id="pump"></div></section>
-</div>
+<div class="tables" id="assets"></div>
 <section>
   <h2>Entrega y comunicaciones</h2>
   <p id="delivery" aria-live="polite">Cargando contadores…</p>
@@ -44,21 +41,18 @@ canvas { width:100%; height:240px; background:#f8fbfa; } a { color:#135c53; }
 <section>
   <h2>Histórico</h2>
   <div class="actions">
-    <label>Variable <select id="tag">
-      <option value="TK101.level">Nivel (m)</option>
-      <option value="TK101.temperature">Temperatura (°C)</option>
-      <option value="P101.flow">Caudal (L/min)</option>
-      <option value="P101.pressure">Presión (bar)</option>
-      <option value="P101.speed">Velocidad (rpm)</option>
-    </select></label>
+    <label>Activo <select id="asset"></select></label>
+    <label>Variable <select id="tag"></select></label>
+    <label>Rango <select id="range"><option value="5">5 min</option><option value="15">15 min</option><option value="60">1 hora</option><option value="1440">24 horas</option></select></label>
     <label>Lote <input id="lot" placeholder="Todos"></label>
-    <button id="refresh">Consultar últimos 5 minutos</button>
+    <button id="refresh">Consultar</button>
+    <label><input type="checkbox" id="auto"> Refrescar histórico</label>
     <a id="csv">Descargar CSV</a>
   </div>
   <p id="history-status" aria-live="polite"></p>
   <canvas id="chart" width="960" height="240" role="img" aria-label="Histórico por hora UTC y unidad seleccionada"></canvas>
 </section>
-<section>
+<section id="lab" hidden>
   <h2>Fallos de laboratorio</h2>
   <div class="actions">
     <label>Simulador <select id="sim"><option value="opcua">OPC UA</option><option value="modbus">Modbus TCP</option></select></label>
@@ -80,7 +74,8 @@ const names = {level:'Nivel', temperature:'Temperatura', flow:'Caudal', pressure
 const number = new Intl.NumberFormat('es-CL',{maximumFractionDigits:2});
 let latestBacklog = [];
 let expected = [];
-let secondsPerSample = 1;
+let readings = [];
+let first = true;
 async function request(url, method = 'GET', data) {
   const response = await fetch(url, {
     method, cache:'no-store', headers: data ? {'Content-Type':'application/json'} : {},
@@ -100,7 +95,7 @@ function row(table, values, header = false) {
     line.append(cell);
   }
 }
-function fill(id, readings) {
+function fill(parent, readings) {
   const table = document.createElement('table');
   row(table, ['Variable','Valor','Calidad','Edad','Lote'], true);
   for (const r of readings) {
@@ -110,23 +105,46 @@ function fill(id, readings) {
     }
     const age = r.age_seconds == null ? '—' : number.format(r.age_seconds) + ' s';
     const quality = r.stale && r.quality !== 'SIN DATOS' ? r.quality + ' · vencido' : r.quality;
-    row(table, [names[r.tag_id.split('.')[1]], value, quality, age, r.order?.lot_id ?? '—']);
+    row(table, [names[r.tag_id.split('.')[1]] ?? r.tag_id, value,
+      [quality, ...(r.quality_reasons ?? [])].join(' · '), age, r.order?.lot_id ?? '—']);
   }
-  byId(id).replaceChildren(table);
+  parent.append(table);
 }
+function options(id, entries) {
+  const select = byId(id), previous = select.value;
+  select.replaceChildren(...entries.map(([value, label]) => new Option(label, value)));
+  if (entries.some(([value]) => value === previous)) select.value = previous;
+}
+function updateTags() {
+  options('tag', readings.filter(r => r.asset_id === byId('asset').value)
+    .map(r => [r.tag_id, r.tag_id + ' (' + r.unit + ')']));
+}
+byId('asset').onchange = () => { updateTags(); drawHistory(); };
+byId('tag').onchange = byId('range').onchange = () => drawHistory();
 async function update() {
-  const [assets, backlog, stats] = await Promise.allSettled([
-    request('/api/assets'), request('/api/backlog'), request('/api/stats')
+  const [assets, backlog, stats, status] = await Promise.allSettled([
+    request('/api/assets'), request('/api/backlog'), request('/api/stats'), request('/api/status')
   ]);
   if (assets.status === 'fulfilled') {
     const a = assets.value;
-    secondsPerSample = 1 / a.frequency_hz;
-    byId('clock').textContent = 'Actualizado ' + new Date(a.updated_at).toLocaleTimeString() + ' · ' + number.format(a.frequency_hz) + ' Hz por variable';
-    fill('tank', a.readings.filter(r => r.asset_id === 'TK101'));
-    fill('pump', a.readings.filter(r => r.asset_id === 'P101'));
+    readings = a.readings;
+    byId('profile').textContent = a.profile === 'demo' ? 'Demo · Datos sintéticos' : 'Adquisición · Fuentes externas autorizadas';
+    byId('lab').hidden = !a.lab_controls;
+    byId('clock').textContent = 'Actualizado ' + new Date(a.updated_at).toLocaleTimeString();
+    const entries = Object.entries(a.assets);
+    options('asset', entries);
+    updateTags();
+    byId('assets').replaceChildren(...entries.map(([id,label]) => {
+      const section = document.createElement('section'), title = document.createElement('h2');
+      title.textContent = label;
+      section.append(title);
+      fill(section, readings.filter(r => r.asset_id === id));
+      return section;
+    }));
+    if (first) { first = false; drawHistory(); }
   } else {
     byId('clock').textContent = assets.reason.message;
-    byId('tank').textContent = byId('pump').textContent = 'Lecturas no disponibles';
+    byId('assets').textContent = 'Lecturas no disponibles';
   }
   if (backlog.status === 'fulfilled') {
     const b = backlog.value;
@@ -135,9 +153,15 @@ async function update() {
     const totals = stats.status === 'fulfilled' ?
       ' · Almacenados ' + (c.stored ?? 0) + ' · Repetidos ' + (c.duplicate ?? 0) +
       ' · Rechazados ' + (c.rejected ?? 0) + ' · Conflictos ' + (c.conflict ?? 0) : ' · Contadores de PostgreSQL no disponibles';
-    byId('delivery').textContent = 'MQTT ' + (b.gateway.mqtt ?? 'sin estado') +
-      ' · OPC UA ' + (b.gateway.opcua ?? 'sin estado') + ' · Modbus ' + (b.gateway.modbus ?? 'sin estado') +
-      ' · Pendientes ' + b.pending + '/' + b.capacity + totals;
+    const s = status.value;
+    const age = value => value == null ? '—' : number.format(value) + ' s';
+    const sources = Object.entries(s?.sources ?? {}).map(([name, source]) =>
+      name + ' ' + source.state + ' (' + age(source.last_read_age_seconds) + ')');
+    byId('delivery').textContent = (s?.state ?? 'Estado no disponible') +
+      ' · MQTT ' + (s?.mqtt ?? '—') + ' · PostgreSQL ' + (s?.postgres ?? '—') +
+      ' · Gateway ' + age(s?.gateway_age_seconds) + ' · Consumidor ' + age(s?.consumer_age_seconds) +
+      ' · Último ACK ' + age(s?.last_ack_age_seconds) + ' · Pendiente más antiguo ' + age(s?.oldest_pending_age_seconds) +
+      ' · ' + sources.join(' · ') + ' · Pendientes ' + b.pending + '/' + b.capacity + totals;
     const gap = b.coverage[0];
     byId('coverage').textContent = gap ?
       'Pérdida de cobertura: ' + gap.skipped_slots + ' lecturas omitidas desde ' + gap.started +
@@ -160,7 +184,8 @@ byId('verify').onclick = async () => {
   byId('evidence').textContent = verified.join('\n') || 'Guarda primero los identificadores pendientes.';
 };
 async function drawHistory() {
-  const end = new Date(), start = new Date(end.getTime() - 300000);
+  if (!byId('tag').value) return;
+  const end = new Date(), start = new Date(end.getTime() - Number(byId('range').value) * 60000);
   const query = new URLSearchParams({tag:byId('tag').value,start:start.toISOString(),end:end.toISOString()});
   if (byId('lot').value.trim()) query.set('lot',byId('lot').value.trim());
   byId('csv').href = '/api/history.csv?' + query;
@@ -169,8 +194,11 @@ async function drawHistory() {
   try {
     const response = await request('/api/history?' + query + '&limit=5000');
     const events = response.events;
-    const valid = events.filter(e => typeof e.value === 'number' && e.quality === 'GOOD');
-    byId('history-status').textContent = valid.length ? valid.length + ' lecturas GOOD · ' + valid[0].unit + ' · eje horizontal UTC' : 'Sin lecturas GOOD en este intervalo';
+    const valid = events.filter(e => e.value !== null && e.quality === 'GOOD');
+    const configured = readings.find(r => r.tag_id === byId('tag').value)?.configured_hz ?? 1;
+    const more = response.next_offset == null ? '' : ' · Vista parcial. Reduce el rango o pagina por API.';
+    byId('history-status').textContent = (valid.length ? valid.length + ' lecturas GOOD · ' + valid[0].unit + ' · eje horizontal UTC' : 'Sin lecturas GOOD en este intervalo') +
+      ' · ' + number.format(configured) + ' Hz configurados' + more;
     if (!valid.length) return;
     const values = valid.map(e => e.value);
     const min = Math.min(...values), max = Math.max(...values);
@@ -185,13 +213,13 @@ async function drawHistory() {
     let previous = null;
     for (const e of events) {
       const time = new Date(e.event_time).getTime();
-      if (typeof e.value !== 'number' || e.quality !== 'GOOD') { previous = null; continue; }
+      if (e.value === null || e.quality !== 'GOOD') { previous = null; continue; }
       const point = {x:x(time),y:y(e.value),time};
-      if (previous && (time - previous.time) <= 1800 * secondsPerSample) {
+      if (previous && previous.unit === e.unit && previous.hash === e.config_hash && (time - previous.time) <= 1800 / configured) {
         ctx.beginPath(); ctx.moveTo(previous.x,previous.y); ctx.lineTo(point.x,point.y); ctx.stroke();
       }
       ctx.fillRect(point.x - 1,point.y - 1,3,3);
-      previous = point;
+      previous = {...point, unit:e.unit, hash:e.config_hash};
     }
   } catch (error) { byId('history-status').textContent = error.message; }
 }
@@ -205,7 +233,7 @@ byId('apply').onclick = () => change('/api/lab/simulator/' + byId('sim').value,'
 byId('pause').onclick = () => change('/api/lab/consumer','PUT',{paused:true});
 byId('resume').onclick = () => change('/api/lab/consumer','PUT',{paused:false});
 byId('seed').onclick = () => change('/api/lab/seed-orders','POST');
-update(); drawHistory(); setInterval(update,2000);
+update(); setInterval(update,2000); setInterval(() => { if (byId('auto').checked) drawHistory(); },5000);
 </script>
 </body>
 </html>

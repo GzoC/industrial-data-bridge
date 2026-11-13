@@ -1,5 +1,32 @@
 # Validación del laboratorio Aurora
 
+## Evolución configurable
+
+Base auditada y HEAD al comenzar: `9c4ccbebb087cbaaaa68c75116db19b0ca88460f`.
+La [CI histórica](https://github.com/GzoC/industrial-data-bridge/actions/runs/43431933156)
+pasó en 31 s. Ejecutó instalación bloqueada, Ruff, formato, pruebas rápidas
+y el grupo de adquisición con simuladores TCP. La definición de esa revisión
+carecía de una ejecución de MQTT/PostgreSQL y de arranque de Compose.
+
+En la rama de evolución se corrieron en Windows las pruebas con Mosquitto
+2.0.22, PostgreSQL 18.6 y Python 3.12.13, usando rutas locales en
+`TEST_MOSQUITTO`, `TEST_PG_BIN` y `REQUIRE_INTEGRATION=1`. La primera ejecución
+obtuvo 16 aprobadas en 129,18 s. Recuperó 2.000/2.000 IDs en 40,69 s.
+En 144 eventos a 10,26 eventos/s, la latencia hasta commit fue p50 0,179 s y
+p95 0,408 s. Una ejecución dirigida posterior aprobó 12 pruebas en 13,41 s.
+Incluyó regresiones de salud y reenvío con MQTT/PostgreSQL después de cambiar
+unidades en el perfil. La prueba del segundo mapa usó Modbus TCP en el
+puerto 2502, sin OPC UA y con un activo distinto. Su servidor de laboratorio
+no representa un modelo comercial.
+
+La CI nueva define dos trabajos. `checks` conserva lint, formato, pruebas
+rápidas y protocolos locales. `integration` instala Mosquitto y PostgreSQL,
+exige sus ejecutables, corre la suite completa y prueba el arranque de Compose
+y la persistencia de un ID tras reiniciar. La máquina Windows carece de
+Docker Engine. El arranque limpio de Compose se verifica por CI, con resultado
+pendiente al preparar esta revisión. Las sesiones TLS de OPC UA y MQTT con
+certificados de laboratorio quedan pendientes de prueba de integración.
+
 Fecha: 13 de noviembre de 2026. Entorno: Windows 10 22H2, 12 procesadores lógicos, 7,87 GiB RAM, CPU. Python 3.12.13, SQLite 3.53.1, uv 0.11.19, asyncua 2.1.0, PyModbus 3.11.4, Paho 2.1.0, Mosquitto 2.0.22 y PostgreSQL 18.6. Semilla de simulación 101. PostgreSQL se ejecutó con binarios nativos de validación y el perfil Compose usa una imagen versionada de PostgreSQL 17.
 
 ## Repetir la validación
