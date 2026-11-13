@@ -33,7 +33,7 @@ flowchart LR
 
 The delivery contract covers events already persisted in the outbox. Broker disconnects may cause replays. PostgreSQL deduplicates by immutable event ID and records conflicting content. A simulator disconnect creates explicit bad readings with null values, and exhausted outbox capacity creates a coverage gap.
 
-The native Windows run recovered all 2,000 buffered event IDs after interruption. See the validation report for latency, resource measurements, and the difference between the native run and the Compose profile.
+The native Windows run recovered all 2,000 buffered event IDs in 45.83 seconds. A separate live sample of 126 events measured 0.317 s p95 from acquisition to PostgreSQL commit at 10.29 events/s.
 
 ## Verification
 

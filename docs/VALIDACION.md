@@ -19,6 +19,8 @@ Los binarios deben estar instalados o extraídos con sus bibliotecas. Las prueba
 
 ## Requisitos y evidencia
 
+D01–D10 aprobados en la ejecución nativa. Pasaron 12 pruebas en 144,83 s. La prueba individual de la demo se repitió con la medición de commit y pasó en 33,46 s.
+
 | Criterio | Prueba | Evidencia |
 | --- | --- | --- |
 | D01 | `test_real_protocols`, `test_clean_live_demo` | Seis variables de ambos servidores TCP, con unidades. Gateway, MQTT, PostgreSQL y API en ejecución. |
@@ -30,11 +32,11 @@ Los binarios deben estar instalados o extraídos con sus bibliotecas. Las prueba
 | D07 | `test_outbox_capacity_persists_and_records_coverage`, `test_gateway_pauses_and_records_lost_coverage` | Capacidad de seis eventos en prueba, pausa de ciclo, contabilidad y recuperación de estado. |
 | D08 | `test_lot_boundary_and_broker_acl` | Lotes A y B asignados por tiempo de evento al entregar fuera de orden. PostgreSQL rechaza solapamientos. |
 | D09 | `test_lot_boundary_and_broker_acl`, `test_endpoints_limited` | Mosquitto rechaza anónimo y publicación de ACK por gateway. Configuración rechaza endpoints externos al laboratorio. |
-| D10 | `test_clean_live_demo` | Arranque desde directorio de datos nuevo, health check por HTTP, caída de simulador visible, apagado ordenado del gateway y detención de los servicios de prueba. |
+| D10 | `test_clean_live_demo` | Arranque desde datos nuevos, health check por HTTP, pausa y recuperación con IDs, consulta histórica por lote y CSV, desconexión y recuperación del simulador, y apagado ordenado del gateway. |
 
-Se midió con intervalo de 0,6 s por ciclo de seis variables. La primera medición desde observación a inserción obtuvo p50 de 0,210 s y p95 de 0,727 s con 132 eventos a 10,00 eventos/s. La medición final usa el timestamp del commit de PostgreSQL con `track_commit_timestamp=on`, habilitado por el fixture de pruebas. La métrica del panel usa la hora de inserción.
+Se midió con intervalo de 0,6 s por ciclo de seis variables. Con 126 eventos a 10,29 eventos/s, la latencia de observación a commit dio p50 de 0,146 s y p95 de 0,317 s. El fixture activa `track_commit_timestamp=on` para consultar la hora de commit en PostgreSQL. La métrica del panel usa la hora de inserción. El ejercicio de interrupción recuperó 2.000 de 2.000 IDs en 45,83 s desde que se reinició la publicación.
 
-En una ejecución se observaron 12,0 % de un procesador lógico y 242,8 MiB RSS sumados, tomando el mayor de dos puntos separados por 12 s. Incluye gateway, simuladores, API, consumidor, broker y procesos PostgreSQL. La suma puede contar memoria compartida varias veces y excluye Chrome. La [captura real](evidence/aurora-live.png) muestra la interfaz con los servicios de prueba.
+En la medición de commit se observaron 13,0 % de un procesador lógico y 253,2 MiB RSS sumados, tomando para RSS el mayor de dos puntos separados por 12 s. Incluye gateway, simuladores, API, consumidor, broker y procesos PostgreSQL. La suma puede contar memoria compartida varias veces y excluye Chrome. La [captura real](evidence/aurora-live.png) muestra la interfaz con los servicios de prueba.
 
 ## Fallos y límites de la verificación
 
